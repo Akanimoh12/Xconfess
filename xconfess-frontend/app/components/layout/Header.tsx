@@ -7,6 +7,7 @@ import { ThemeToggle } from "../common/ThemeToggle";
 import { WalletButton } from "@/components/wallet/WalletButton";
 
 import { BrandLogo } from "@/app/components/brand/BrandLogo";
+import { NotificationBell } from "@/app/components/notifications/NotificationBell";
 import Sidebar from "./Sidebar";
 
 const navLinkClass =
@@ -51,6 +52,7 @@ export default function Header() {
               <WalletButton />
               <Link href="/search" aria-label="Search" className="hidden h-10 w-10 items-center justify-center rounded-full text-[var(--secondary)] transition-colors hover:bg-[var(--surface-muted)] hover:text-[var(--foreground)] dark:flex"><Search className="h-4 w-4" /></Link>
               <ThemeToggle />
+              <NotificationBell />
               <Link href="/profile" aria-label="Profile" className="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--primary-deep)] transition-colors hover:bg-[var(--surface-muted)]"><UserRound className="h-4 w-4" /></Link>
             </div>
 
@@ -58,6 +60,7 @@ export default function Header() {
               <Link href="/wallet" className="flex min-h-[44px] items-center rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] px-3 text-sm font-semibold text-[var(--foreground)]">Wallet</Link>
               <WalletButton className="hidden" />
               <ThemeToggle />
+              <NotificationBell />
               <button
                 ref={menuButtonRef}
                 type="button"
