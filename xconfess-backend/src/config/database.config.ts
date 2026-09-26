@@ -176,6 +176,11 @@ export const getTypeOrmConfig = (
     poolExtra.createTimeoutMillis = defaults.createTimeoutMillis;
   }
 
+  // Statement timeout for public feed reads (configurable via env)
+  const statementTimeoutMs = configService.get<string>('DB_STATEMENT_TIMEOUT_MS')
+    ? parseInt(configService.get<string>('DB_STATEMENT_TIMEOUT_MS')!, 10)
+    : 30000; // 30 seconds default
+
   return {
     type: 'postgres',
     /*
@@ -226,7 +231,13 @@ export const getTypeOrmConfig = (
 
     synchronize,
     autoLoadEntities: true,
-    extra: poolExtra,
+    extra: {
+      ...poolExtra,
+      // PostgreSQL statement timeout for queries (in milliseconds).
+      // Prevents long-running queries from holding connections indefinitely.
+      // Configurable via DB_STATEMENT_TIMEOUT_MS env var (default: 30000ms).
+      statement_timeout: statementTimeoutMs,
+    },
     logging: TRUE_VALUES.has(loggingSetting),
   };
 };
