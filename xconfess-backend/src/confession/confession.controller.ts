@@ -41,6 +41,7 @@ import { UpdateConfessionDto } from './dto/update-confession.dto';
 import { OptionalJwtAuthGuard } from '../auth/optional-jwt-auth.guard';
 import { SearchDiscoveryService } from '../search-discovery/search-discovery.service';
 import { SparseFieldsetsInterceptor } from '../common/interceptors/sparse-fieldsets.interceptor';
+import { QueryTimeoutInterceptor } from '../common/query-timeout.interceptor';
 import { ConfessionSchedulerService } from './confession-scheduler.service';
 import { ConfessionIdempotencyService } from './confession-idempotency.service';
 
@@ -169,6 +170,7 @@ export class ConfessionController {
   }
 
   @Get()
+  @UseInterceptors(QueryTimeoutInterceptor)
   @ApiOperation({ summary: 'Get paginated confessions list' })
   @ApiResponse({
     status: 200,
