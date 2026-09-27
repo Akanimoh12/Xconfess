@@ -136,9 +136,19 @@ export const TipButton = ({ confessionId, recipientAddress, initialStats }: TipB
 
   const stateLabel = {
     idle: null,
-    submitting: "Sending…",
-    pending: "Waiting for Stellar confirmation…",
+    submitting: "Signing & submitting…",
+    pending: "Confirming on Stellar network…",
     verifying: "Verifying with backend…",
+    confirmed: null,
+    failed: null,
+    stale: null,
+  }[info.state];
+
+  const stateDescription = {
+    idle: null,
+    submitting: "Your wallet is signing this transaction. Please approve in your wallet extension.",
+    pending: "Transaction submitted to Stellar. Ledger finality takes 5–6 s.",
+    verifying: "Confirming the transaction was recorded on-chain.",
     confirmed: null,
     failed: null,
     stale: null,
@@ -209,9 +219,9 @@ export const TipButton = ({ confessionId, recipientAddress, initialStats }: TipB
                 <Spinner />
                 <span>{stateLabel}</span>
               </div>
-              {info.state === "pending" && (
+              {stateDescription && (
                 <p className="text-yellow-300 text-xs mt-1">
-                  Stellar ledger finality takes 5–6 s. Please wait…
+                  {stateDescription}
                 </p>
               )}
               {info.txHash && (
