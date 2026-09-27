@@ -44,6 +44,7 @@ export class AnonymousConfession {
    * The confession entity defines owner relation as anonymousUser.
    * Always use confession.anonymousUser for ownership checks and relation loading.
    */
+  @Index()
   @Column({ name: 'anonymous_user_id' })
   anonymousUserId: string;
 

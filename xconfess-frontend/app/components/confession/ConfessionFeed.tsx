@@ -75,11 +75,20 @@ const ConfessionFeedBody = ({
     isLoading,
     isFetching,
     isFetchingNextPage,
+    isPlaceholderData,
     hasNextPage,
     fetchNextPage,
     error,
     refetch,
   } = useInfiniteConfessions({ sort, limit });
+
+  // placeholderData keeps the previous sort's pages visible while the new
+  // sort's first page is in flight (see useInfiniteConfessions). That's the
+  // right call for a background refetch of the *same* filter, but for a
+  // filter change it means the feed briefly shows confessions for the sort
+  // the user just left. Treat it as its own loading state, distinct from
+  // both the initial load and "loading more" pagination.
+  const isSwitchingFilter = isPlaceholderData && isFetching && !isFetchingNextPage;
 
   const announcement = useLiveAnnouncement({
     isLoading,
@@ -182,10 +191,11 @@ const ConfessionFeedBody = ({
     </div>
   );
 
-  if (isLoading) {
+  if (isLoading || isSwitchingFilter) {
     return (
       <>
         {liveRegion}
+        {!preview && <div className="mb-5">{sortControls}</div>}
         <ConfessionFeedSkeleton />
       </>
     );
