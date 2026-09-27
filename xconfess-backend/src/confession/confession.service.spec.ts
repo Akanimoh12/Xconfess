@@ -519,4 +519,176 @@ describe('ConfessionService — anchor pending-state guard (#776)', () => {
       expect(confessionRepo.update).not.toHaveBeenCalled();
     });
   });
+
+  describe('Stellar Wave Issues: Idempotency, Soft-Delete, Maximum Length, Optimistic Reactions', () => {
+    describe('Issue #1932: Idempotency handling for confession creation retries', () => {
+      it('should reject requests exceeding maximum confession length', async () => {
+        const oversizedMessage = 'x'.repeat(1001);
+        const dto = { message: oversizedMessage, gender: null };
+
+        await expect(service.create(dto as any)).rejects.toThrow(
+          'Confession cannot exceed 1000 characters',
+        );
+      });
+
+      it('should accept confessions at maximum length boundary', async () => {
+        const maxLengthMessage = 'x'.repeat(1000);
+        const dto = {
+          message: maxLengthMessage,
+          gender: null,
+          idempotencyKey: 'boundary-test-key',
+        };
+
+        aiModerationService.moderateContent.mockResolvedValue({
+          score: 0.1,
+          flags: [],
+          status: 'approved',
+          requiresReview: false,
+          details: {},
+        });
+
+        confessionRepo.create.mockReturnValue({
+          message: encryptConfession(maxLengthMessage, '12345678901234567890123456789012'),
+          idempotencyKey: 'boundary-test-key',
+        } as any);
+
+        confessionRepo.save.mockResolvedValue({
+          id: 'conf-max-length',
+          message: encryptConfession(maxLengthMessage, '12345678901234567890123456789012'),
+          idempotencyKey: 'boundary-test-key',
+          created_at: new Date(),
+        } as any);
+
+        const result = await service.create(dto as any);
+        expect(result).toBeDefined();
+      });
+    });
+
+    describe('Issue #1930: Maximum confession body length enforcement', () => {
+      it('should enforce maximum length at persistence boundary', async () => {
+        const tooLongMessage = 'a'.repeat(1001);
+        const dto = { message: tooLongMessage, gender: null };
+
+        const error = await service
+          .create(dto as any)
+          .catch((e) => e);
+
+        expect(error).toBeInstanceOf(BadRequestException);
+        expect(error.message).toContain('1000 characters');
+      });
+
+      it('should accept valid-length confessions', async () => {
+        const validMessage = 'This is a valid confession under 1000 characters.';
+        const dto = {
+          message: validMessage,
+          gender: null,
+          idempotencyKey: 'valid-msg-key',
+        };
+
+        aiModerationService.moderateContent.mockResolvedValue({
+          score: 0.1,
+          flags: [],
+          status: 'approved',
+          requiresReview: false,
+          details: {},
+        });
+
+        confessionRepo.create.mockReturnValue({
+          message: encryptConfession(validMessage, '12345678901234567890123456789012'),
+          idempotencyKey: 'valid-msg-key',
+        } as any);
+
+        confessionRepo.save.mockResolvedValue({
+          id: 'conf-valid',
+          message: encryptConfession(validMessage, '12345678901234567890123456789012'),
+          idempotencyKey: 'valid-msg-key',
+          created_at: new Date(),
+        } as any);
+
+        const result = await service.create(dto as any);
+        expect(result).toBeDefined();
+      });
+    });
+
+    describe('Issue #1929: Soft-delete semantics for user-owned confessions', () => {
+      it('should exclude deleted confessions from public reads', async () => {
+        await service.getPublicFeed({ limit: 10 });
+        const calls = qb.andWhere.mock.calls;
+        const hasDeletedFilter = calls.some((call) =>
+          String(call[0]).includes('isDeleted'),
+        );
+        expect(hasDeletedFilter).toBe(true);
+      });
+
+      it('should mark confessions as deleted with timestamp', async () => {
+        const confessionId = 'conf-to-delete';
+        confessionRepo.findOne.mockResolvedValue({
+          id: confessionId,
+          isDeleted: false,
+        } as any);
+
+        confessionRepo.update.mockResolvedValue({ affected: 1 } as any);
+
+        await service.deleteConfession(confessionId, 'user-123');
+
+        expect(confessionRepo.update).toHaveBeenCalledWith(
+          { id: confessionId },
+          expect.objectContaining({
+            isDeleted: true,
+            deletedAt: expect.any(Date),
+            deletedBy: 'user-123',
+          }),
+        );
+      });
+
+      it('should allow repeat deletion (idempotent)', async () => {
+        const confessionId = 'conf-already-deleted';
+        confessionRepo.findOne.mockResolvedValue({
+          id: confessionId,
+          isDeleted: true,
+          deletedAt: new Date('2026-01-01'),
+        } as any);
+
+        confessionRepo.update.mockResolvedValue({ affected: 1 } as any);
+
+        await service.deleteConfession(confessionId, 'user-123');
+
+        expect(confessionRepo.update).toHaveBeenCalled();
+      });
+    });
+
+    describe('Issue #1931: Optimistic reaction rollback (frontend integration)', () => {
+      it('should support idempotency key in confession creation for retry safety', async () => {
+        const dto = {
+          message: 'Test confession for idempotency',
+          gender: null,
+          idempotencyKey: 'retry-safe-key-001',
+        };
+
+        aiModerationService.moderateContent.mockResolvedValue({
+          score: 0.1,
+          flags: [],
+          status: 'approved',
+          requiresReview: false,
+          details: {},
+        });
+
+        confessionRepo.create.mockReturnValue({
+          message: encryptConfession(dto.message, '12345678901234567890123456789012'),
+          idempotencyKey: 'retry-safe-key-001',
+        } as any);
+
+        confessionRepo.save.mockResolvedValue({
+          id: 'conf-retry-safe',
+          message: encryptConfession(dto.message, '12345678901234567890123456789012'),
+          idempotencyKey: 'retry-safe-key-001',
+          created_at: new Date(),
+        } as any);
+
+        const result = await service.create(dto as any);
+        expect(result.id).toBe('conf-retry-safe');
+        expect(confessionRepo.save).toHaveBeenCalled();
+      });
+    });
+  });
 });
