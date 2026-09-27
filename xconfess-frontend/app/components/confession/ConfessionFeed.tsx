@@ -9,6 +9,8 @@ import { ConfessionFeedSkeleton } from "./LoadingSkeleton";
 import { useInfiniteConfessions } from "../../lib/hooks/useConfessionsQuery";
 import ErrorState from "../common/ErrorState";
 import { useScrollRestoration } from "../../lib/hooks/useScrollRestoration";
+import { useLiveAnnouncement } from "../../lib/hooks/useLiveAnnouncement";
+import { useFeedPageRestoration } from "../../lib/hooks/useFeedPageRestoration";
 
 const ESTIMATED_CARD_HEIGHT = 300;
 const SCROLL_THRESHOLD = 400;
@@ -78,6 +80,23 @@ const ConfessionFeedBody = ({
     error,
     refetch,
   } = useInfiniteConfessions({ sort, limit });
+
+  const announcement = useLiveAnnouncement({
+    isLoading,
+    isFetching,
+    isFetchingNextPage,
+    isError: Boolean(error),
+    errorMessage: error instanceof Error ? error.message : undefined,
+  });
+
+  useFeedPageRestoration({
+    pathname,
+    pageCount: data?.pages.length ?? 0,
+    hasNextPage: Boolean(hasNextPage),
+    isFetchingNextPage,
+    fetchNextPage,
+    enabled: !preview,
+  });
 
   const allConfessions = data?.pages.flatMap((page) => page.confessions) ?? [];
   const visibleConfessions = preview ? allConfessions.slice(0, 3) : allConfessions;
@@ -157,25 +176,40 @@ const ConfessionFeedBody = ({
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
+  const liveRegion = (
+    <div className="sr-only" aria-live="polite" aria-atomic="true">
+      {announcement}
+    </div>
+  );
+
   if (isLoading) {
-    return <ConfessionFeedSkeleton />;
+    return (
+      <>
+        {liveRegion}
+        <ConfessionFeedSkeleton />
+      </>
+    );
   }
 
   if (error) {
     return (
-      <ErrorState
-        error="The backend service is not responding yet."
-        title="Unable to load feed"
-        description="This can happen while the Render instance is waking or a new backend deploy is finishing."
-        showRetry
-        onRetry={handleRetry}
-      />
+      <>
+        {liveRegion}
+        <ErrorState
+          error="The backend service is not responding yet."
+          title="Unable to load feed"
+          description="This can happen while the Render instance is waking or a new backend deploy is finishing."
+          showRetry
+          onRetry={handleRetry}
+        />
+      </>
     );
   }
 
   if (isEmpty) {
     return (
       <div className="space-y-4">
+        {liveRegion}
         {!preview && sortControls}
         <div
           className="luxury-panel rounded-2xl p-8 text-center"
@@ -214,9 +248,7 @@ const ConfessionFeedBody = ({
   return (
     <div className="relative mx-auto w-full max-w-3xl py-2">
       {!preview && <div className="mb-5">{sortControls}</div>}
-      <div className="sr-only" aria-live="polite" aria-atomic="true">
-        {isFetching && !isFetchingNextPage ? "Updating feed contents..." : ""}
-      </div>
+      {liveRegion}
 
       <div
         className="relative w-full transition-opacity duration-200"
