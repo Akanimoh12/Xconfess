@@ -29,6 +29,7 @@ import { cn } from "@/app/lib/utils/cn";
 import apiClient from "@/app/lib/api/client";
 import { useGlobalToast } from "@/app/components/common/Toast";
 import { clearPendingConfession, loadPendingConfession } from "@/app/lib/utils/pendingConfession";
+import { clearSessionDraft, loadSessionDraft, saveSessionDraft } from "@/app/lib/utils/sessionDraft";
 import { useAuth } from "@/app/lib/hooks/useAuth";
 
 
@@ -115,10 +116,28 @@ export const EnhancedConfessionForm: React.FC<EnhancedConfessionFormProps> = ({
   const submitSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
+  // Synchronous re-entry guard: `isSubmitting` state updates are batched by
+  // React and can lag behind a second rapid click/Enter-key submit that fires
+  // before the button visually disables. A ref is read/written immediately,
+  // so it blocks a second concurrent handleSubmit call even in that window.
+  const isSubmittingRef = useRef(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { anchor, publicKey, isEmbeddedWallet } = useStellarWallet();
   const toast = useGlobalToast();
+
+  // Restore a draft left behind by accidental navigation (back/forward,
+  // refresh) within the same tab session. Runs once on mount, before the
+  // auth-redirect pending-confession restore below (which takes priority if
+  // both exist, since it reflects an explicit login action).
+  useEffect(() => {
+    const draft = loadSessionDraft();
+    if (!draft) return;
+    setTitle(draft.title || "");
+    setBody(draft.body);
+    setGender(draft.gender);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (isAuthLoading || !isAuthenticated) return;
@@ -131,6 +150,15 @@ export const EnhancedConfessionForm: React.FC<EnhancedConfessionFormProps> = ({
     toast.info("Your confession draft is restored. Review it, then publish when ready.");
     clearPendingConfession();
   }, [isAuthenticated, isAuthLoading, toast]);
+
+  // Autosave to sessionStorage so the draft survives accidental navigation
+  // away from and back to this page within the same tab session.
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      saveSessionDraft({ title, body, gender });
+    }, 400);
+    return () => clearTimeout(timeout);
+  }, [title, body, gender]);
 
   const currentValidationErrors = validateConfessionForm({
     title,
@@ -197,6 +225,11 @@ export const EnhancedConfessionForm: React.FC<EnhancedConfessionFormProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Block re-entrant submissions (rapid double-click, Enter held down,
+    // or a second submit firing before React flushes `isSubmitting`).
+    if (isSubmittingRef.current) return;
+
     setSubmitError(null);
     setSubmitSuccess(false);
 
@@ -206,6 +239,7 @@ export const EnhancedConfessionForm: React.FC<EnhancedConfessionFormProps> = ({
       return;
     }
 
+    isSubmittingRef.current = true;
     setIsSubmitting(true);
 
     try {
@@ -265,6 +299,7 @@ export const EnhancedConfessionForm: React.FC<EnhancedConfessionFormProps> = ({
       setStellarTxHash(null);
       setIsPreviewMode(false);
       clearPendingConfession();
+      clearSessionDraft();
 
       if (submitSuccessTimerRef.current) {
         clearTimeout(submitSuccessTimerRef.current);
@@ -278,6 +313,7 @@ export const EnhancedConfessionForm: React.FC<EnhancedConfessionFormProps> = ({
       setSubmitError(errorMessage);
       toast.error(errorMessage);
     } finally {
+      isSubmittingRef.current = false;
       setIsSubmitting(false);
     }
   };
