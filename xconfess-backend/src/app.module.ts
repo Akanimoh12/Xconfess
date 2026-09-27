@@ -38,6 +38,7 @@ import { FeatureFlagsModule } from './feature-flags/feature-flags.module';
 import { BookmarkModule } from './bookmark/bookmark.module';
 import { KeyRotationModule } from './key-rotation/key-rotation.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { AttachmentModule } from './attachment/attachment.module';
 // âœ… Canonical queue stack: @nestjs/bullmq (BullMQ v4 + ioredis)
 // The legacy @nestjs/bull import has been removed. All queues use BullMQ.
 import { BullModule } from '@nestjs/bullmq';
@@ -150,10 +151,11 @@ import { GracefulShutdownModule } from './common/graceful-shutdown.module';
     EncryptionModule,
     CacheModule,
     DatabaseModule,
-    FeatureFlagsModule,
+FeatureFlagsModule,
     BookmarkModule,
     KeyRotationModule,
-    GracefulShutdownModule,
+    AnalyticsModule,
+    AttachmentModule,
   ],
   controllers: [AppController],
   providers: [
