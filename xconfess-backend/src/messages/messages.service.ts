@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, DataSource } from 'typeorm';
-import { Message } from './entities/message.entity';
+import { Message, MessageDeliveryStatus } from './entities/message.entity';
 import { CreateMessageDto, ReplyMessageDto } from './dto/message.dto';
 import { User } from '../user/entities/user.entity';
 import { AnonymousConfession } from '../confession/entities/confession.entity';
@@ -110,6 +110,7 @@ export class MessagesService {
         confession,
         content: createMessageDto.content,
         isEncrypted: true,
+        deliveryStatus: MessageDeliveryStatus.SENT,
       });
 
       const savedMessage = await messageRepo.save(message);
@@ -182,11 +183,20 @@ export class MessagesService {
       throw new NotFoundException('Thread not found');
     }
 
+    // Mark thread as read for the participant
     await this.customMessageRepository.markThreadRead(
       confessionId,
       senderId,
       viewerRole,
     );
+
+    // Also mark messages as delivered if user is the sender (recipient of messages)
+    if (viewerRole === 'SENDER') {
+      await this.customMessageRepository.markMessagesDelivered(
+        confessionId,
+        senderId,
+      );
+    }
 
     const limit = query?.limit || 20;
 
@@ -297,8 +307,8 @@ export class MessagesService {
           role === 'AUTHOR'
             ? !m.authorReadAt
             : role === 'SENDER'
-              ? !!m.hasReply && !m.senderReadAt
-              : false;
+            ? !!m.hasReply && !m.senderReadAt
+            : false;
 
         threadsMap.set(threadId, {
           confessionId: m.confession.id,
@@ -313,6 +323,12 @@ export class MessagesService {
           hasUnread: hasUnreadForRole,
           unreadCount: hasUnreadForRole ? 1 : 0,
           isAuthor: role === 'AUTHOR',
+          // Include delivery status for sender-side threads
+          ...(role === 'SENDER' && {
+            deliveryStatus: m.deliveryStatus,
+            deliveredAt: m.deliveredAt,
+            readAt: m.readAt,
+          }),
         });
       } else {
         const existing = threadsMap.get(threadId);
@@ -325,8 +341,8 @@ export class MessagesService {
           role === 'AUTHOR'
             ? !m.authorReadAt
             : role === 'SENDER'
-              ? !!m.hasReply && !m.senderReadAt
-              : false;
+            ? !!m.hasReply && !m.senderReadAt
+            : false;
         if (messageUnread) {
           existing.hasUnread = true;
           existing.unreadCount += 1;
@@ -398,6 +414,7 @@ export class MessagesService {
       message.replyContent = dto.reply.trim();
       message.isEncrypted = true;
       message.repliedAt = new Date();
+      message.senderReadAt = null; // Reset sender read state since new reply
       const savedReply = await messageRepo.save(message);
 
       // Create Outbox Event for notification to the original sender
@@ -480,6 +497,40 @@ export class MessagesService {
 
     const user = { id: userId } as User;
     return this.findForConfessionThread(confessionId, senderId, user, query);
+  }
+
+  /**
+   * Mark messages as read for the sender (recipient of replies).
+   * Idempotent: repeated calls have no additional effect.
+   * Only the sender (recipient) can mark their messages as read.
+   */
+  async markMessagesAsRead(
+    confessionId: string,
+    senderId: string,
+    userId: number,
+  ): Promise<{ success: boolean; updatedCount: number }> {
+    const confession = await this.confessionRepository.findOne({
+      where: { id: confessionId },
+      relations: ['anonymousUser'],
+    });
+    if (!confession) throw new NotFoundException('Thread not found');
+
+    const userAnons = await this.userAnonRepo.find({
+      where: { userId },
+    });
+    const anonIds = userAnons.map((ua) => ua.anonymousUserId);
+
+    // Only the sender can mark their messages as read
+    if (!anonIds.includes(senderId)) {
+      throw new NotFoundException('Thread not found');
+    }
+
+    const updatedCount = await this.customMessageRepository.markMessagesRead(
+      confessionId,
+      senderId,
+    );
+
+    return { success: true, updatedCount };
   }
 
   /**

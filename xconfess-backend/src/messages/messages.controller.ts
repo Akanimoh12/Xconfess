@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Delete,
+  Put,
   Param,
   Body,
   Query,
@@ -80,6 +81,32 @@ export class MessagesController {
       query,
     );
     return thread;
+  }
+
+  /**
+   * PUT /messages/:userId/thread/:threadId/read
+   * Mark messages as read for the sender (recipient of replies).
+   * Idempotent: repeated calls have no additional effect.
+   * Only the sender (recipient) can mark their messages as read.
+   * Returns NotFound to avoid revealing thread existence to non-participants.
+   */
+  @Put(':userId/thread/:threadId/read')
+  @UseGuards(OwnershipGuard)
+  @Ownership({ paramKey: 'userId' })
+  async markThreadAsRead(
+    @Param('userId') userId: string,
+    @Param('threadId') threadId: string,
+    @Req() req: any,
+  ) {
+    const [confessionId, senderId] = threadId.split('_');
+    if (!confessionId || !senderId) {
+      return { success: false, updatedCount: 0 };
+    }
+    return this.messagesService.markMessagesAsRead(
+      confessionId,
+      senderId,
+      req.user.sub,
+    );
   }
 
   /**

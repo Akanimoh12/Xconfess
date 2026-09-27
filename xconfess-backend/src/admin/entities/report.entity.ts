@@ -113,4 +113,7 @@ export class Report {
 
   @Column({ name: 'priority_calculated_at', type: 'timestamp', nullable: true })
   priorityCalculatedAt: Date | null;
+
+  @Column({ type: 'int', default: 1 })
+  version: number;
 }

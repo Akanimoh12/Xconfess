@@ -17,6 +17,7 @@ import {
   NotificationDeliveryOutcome,
   NotificationDeliveryState,
 } from '../delivery-state';
+import { RequestContextStorage } from '../../common/request-context';
 
 interface ChannelPreferences {
   inApp?: boolean;
@@ -37,6 +38,7 @@ export class NotificationService {
     private notificationQueue: Queue,
     private readonly appLogger: AppLogger,
     private readonly configService: ConfigService,
+    private readonly requestContextStorage: RequestContextStorage,
   ) {}
 
   async enqueueNotification(
@@ -86,11 +88,13 @@ export class NotificationService {
       }
     }
 
+    const requestId = this.requestContextStorage.getRequestId();
     await this.notificationQueue.add(
       'send-notification',
       {
         ...payload,
         type,
+        ...(requestId && { requestId }),
       },
       { jobId },
     );
