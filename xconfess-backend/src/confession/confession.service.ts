@@ -133,7 +133,12 @@ export class ConfessionService {
       // First occurrence: run creation, then commit idempotency record.
       let savedConfession: AnonymousConfession;
       try {
-        savedConfession = await this.executeCreate(dto, msg, manager, walletAddress);
+        savedConfession = await this.executeCreate(
+          dto,
+          msg,
+          manager,
+          walletAddress,
+        );
       } catch (err) {
         await this.idempotencyService.commitFailure(idempotencyResult.record);
         throw err;
@@ -216,31 +221,33 @@ export class ConfessionService {
       ...(dto.idempotencyKey ? { idempotencyKey: dto.idempotencyKey } : {}),
     };
 
-    // If manager is provided, we're already in a transaction - use it directly
-    if (manager) {
-      return this.executeCreateInTransaction(
-        manager,
-        dto,
-        msg,
-        walletAddress,
-        validatedTags,
-        moderationResult,
-        confessionData,
-      );
-    }
+    // Keep every database side effect in one transaction. Events and cache
+    // invalidation are published only after this transaction commits so a
+    // later insert failure cannot leave notifications for a rolled-back row.
+    const savedConfession = manager
+      ? await this.executeCreateInTransaction(
+          manager,
+          dto,
+          msg,
+          walletAddress,
+          validatedTags,
+          moderationResult,
+          confessionData,
+        )
+      : await this.dataSource.transaction((txManager) =>
+          this.executeCreateInTransaction(
+            txManager,
+            dto,
+            msg,
+            walletAddress,
+            validatedTags,
+            moderationResult,
+            confessionData,
+          ),
+        );
 
-    // Otherwise, create a new transaction for atomicity
-    return this.dataSource.transaction(async (txManager) => {
-      return this.executeCreateInTransaction(
-        txManager,
-        dto,
-        msg,
-        walletAddress,
-        validatedTags,
-        moderationResult,
-        confessionData,
-      );
-    });
+    await this.publishConfessionCreated(savedConfession, dto, moderationResult);
+    return savedConfession;
   }
 
   /**
@@ -257,93 +264,103 @@ export class ConfessionService {
     moderationResult: any,
     confessionData: any,
   ): Promise<AnonymousConfession> {
+    // Create AnonymousUser within transaction
+    const anonymousUser = await txManager
+      .getRepository(AnonymousUser)
+      .save(txManager.getRepository(AnonymousUser).create());
+
+    // Create confession within transaction
+    const confessionRepo = txManager.getRepository(AnonymousConfession);
+    const conf = confessionRepo.create({
+      ...confessionData,
+      anonymousUser,
+    });
+
+    const savedConfession = (await confessionRepo.save(
+      conf,
+    )) as unknown as AnonymousConfession;
+
+    // Create ConfessionTag entries within transaction
+    if (validatedTags.length > 0) {
+      const confessionTagRepo = txManager.getRepository(ConfessionTag);
+      const confessionTags = validatedTags.map((tag) =>
+        confessionTagRepo.create({
+          confession: savedConfession,
+          tag: tag,
+        }),
+      );
+      await confessionTagRepo.save(confessionTags);
+    }
+
+    // Log moderation decision within transaction
+    await this.moderationRepoService.createLog(
+      msg,
+      moderationResult,
+      savedConfession.id,
+      undefined,
+      'openai',
+      txManager,
+    );
+
+    return savedConfession;
+  }
+
+  private async publishConfessionCreated(
+    confession: AnonymousConfession,
+    dto: CreateConfessionDto,
+    moderationResult: any,
+  ): Promise<void> {
     try {
-      // Create AnonymousUser within transaction
-      const anonymousUser = await txManager
-        .getRepository(AnonymousUser)
-        .save(txManager.getRepository(AnonymousUser).create());
+      await this.invalidateConfessionCache();
+    } catch (err) {
+      this.logger.warn(
+        {
+          action: 'confession_cache_invalidation_failed',
+          confessionId: confession.id,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        'ConfessionsService',
+      );
+    }
 
-      // Create confession within transaction
-      const confessionRepo = txManager.getRepository(AnonymousConfession);
-      const conf = confessionRepo.create({
-        ...confessionData,
-        anonymousUser,
-      });
-
-      const savedConfession = await confessionRepo.save(conf) as unknown as AnonymousConfession;
-
-      // Create ConfessionTag entries within transaction
-      if (validatedTags.length > 0) {
-        const confessionTagRepo = txManager.getRepository(ConfessionTag);
-        const confessionTags = validatedTags.map((tag) =>
-          confessionTagRepo.create({
-            confession: savedConfession,
-            tag: tag,
-          }),
-        );
-        await confessionTagRepo.save(confessionTags);
-      }
-
-      // Log moderation decision within transaction
-      await this.moderationRepoService.createLog(
-        msg,
-        moderationResult,
-        savedConfession.id,
-        undefined,
-        'openai',
-        txManager,
+    this.analyticsEventService
+      ?.record({
+        eventName: 'confession_created',
+        actorId: `anon:${confession.anonymousUser?.id ?? confession.anonymousUserId}`,
+        occurredAt: confession.created_at,
+        idempotencyKey: dto.idempotencyKey
+          ? `confession_created:${dto.idempotencyKey}`
+          : `confession_created:${confession.id}`,
+        metadata: {
+          source: 'confession_service',
+          confessionId: confession.id,
+        },
+      })
+      .catch((err) =>
+        this.logger.warn(
+          {
+            action: 'analytics_record_failed',
+            eventName: 'confession_created',
+            confessionId: confession.id,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          'ConfessionsService',
+        ),
       );
 
-      // Invalidate cache (non-transactional, but safe to do after commit)
-      await this.invalidateConfessionCache();
-
-      // Analytics (fire-and-forget, non-blocking)
-      this.analyticsEventService
-        ?.record({
-          eventName: 'confession_created',
-          actorId: `anon:${anonymousUser.id}`,
-          occurredAt: savedConfession.created_at,
-          idempotencyKey: dto.idempotencyKey
-            ? `confession_created:${dto.idempotencyKey}`
-            : `confession_created:${savedConfession.id}`,
-          metadata: {
-            source: 'confession_service',
-            confessionId: savedConfession.id,
-          },
-        })
-        .catch((err) =>
-          this.logger.warn(
-            {
-              action: 'analytics_record_failed',
-              eventName: 'confession_created',
-              confessionId: savedConfession.id,
-              error: err instanceof Error ? err.message : String(err),
-            },
-            'ConfessionsService',
-          ),
-        );
-
-      // Emit events for high/medium severity content (non-transactional, but safe after commit)
-      if (moderationResult.status === ModerationStatus.REJECTED) {
-        this.eventEmitter.emit('moderation.high-severity', {
-          confessionId: savedConfession.id,
-          score: moderationResult.score,
-          flags: moderationResult.flags,
-        });
-      }
-
-      if (moderationResult.status === ModerationStatus.FLAGGED) {
-        this.eventEmitter.emit('moderation.requires-review', {
-          confessionId: savedConfession.id,
-          score: moderationResult.score,
-          flags: moderationResult.flags,
-        });
-      }
-
-      return savedConfession;
-    } catch (error) {
-      // Re-throw to trigger transaction rollback
-      throw error;
+    if (moderationResult.status === ModerationStatus.REJECTED) {
+      this.eventEmitter.emit('moderation.high-severity', {
+        confessionId: confession.id,
+        score: moderationResult.score,
+        flags: moderationResult.flags,
+      });
+    }
+    if (moderationResult.status === ModerationStatus.FLAGGED) {
+      this.eventEmitter.emit('moderation.requires-review', {
+        confessionId: confession.id,
+        score: moderationResult.score,
+        flags: moderationResult.flags,
+      });
     }
   }
 
