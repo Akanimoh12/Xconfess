@@ -450,6 +450,7 @@ export class MessagesService {
   async getThreadWithParticipantCheck(
     threadId: string,
     userId: number,
+    query?: GetMessagesQueryDto,
   ): Promise<any> {
     const [confessionId, senderId] = threadId.split('_');
     if (!confessionId || !senderId) {
@@ -478,7 +479,7 @@ export class MessagesService {
     }
 
     const user = { id: userId } as User;
-    return this.findForConfessionThread(confessionId, senderId, user);
+    return this.findForConfessionThread(confessionId, senderId, user, query);
   }
 
   /**

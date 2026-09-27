@@ -5,6 +5,7 @@ import {
   Delete,
   Param,
   Body,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -13,6 +14,7 @@ import { OwnershipGuard } from '../common/guards/ownership.guard';
 import { Ownership } from '../common/decorators/ownership.decorator';
 import { MessagesService } from './messages.service';
 import { CreateMessageDto, ReplyMessageDto } from './dto/message.dto';
+import { GetMessagesQueryDto } from './dto/get-messages-query.dto';
 import { RateLimitGuard } from '../auth/guard/rate-limit.guard';
 import { RateLimit } from '../auth/guard/rate-limit.decorator';
 
@@ -52,19 +54,30 @@ export class MessagesController {
   @Get(':userId/inbox')
   @UseGuards(OwnershipGuard)
   @Ownership({ paramKey: 'userId' })
-  async getInbox(@Param('userId') userId: string, @Req() req: any) {
-    return this.messagesService.getInbox(req.user.sub);
+  async getInbox(
+    @Param('userId') userId: string,
+    @Query() query: GetMessagesQueryDto,
+    @Req() req: any,
+  ) {
+    return this.messagesService.getInbox(req.user.sub, query);
   }
 
   /**
    * GET /messages/thread/:threadId
    * Verify the requester is a participant in the thread — not just authenticated.
+   * Supports cursor-based pagination via `cursor`/`limit` query params so large
+   * threads never return an unbounded history in a single response.
    */
   @Get('thread/:threadId')
-  async getThread(@Param('threadId') threadId: string, @Req() req: any) {
+  async getThread(
+    @Param('threadId') threadId: string,
+    @Query() query: GetMessagesQueryDto,
+    @Req() req: any,
+  ) {
     const thread = await this.messagesService.getThreadWithParticipantCheck(
       threadId,
       req.user.sub,
+      query,
     );
     return thread;
   }
