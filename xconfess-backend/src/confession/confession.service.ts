@@ -99,6 +99,14 @@ export class ConfessionService {
     const msg = this.sanitizeMessage(dto.message);
     if (!msg) throw new BadRequestException('Invalid confession content');
 
+    // ── Maximum length enforcement at persistence boundary ─────────────────
+    const MAX_CONFESSION_LENGTH = 1000;
+    if (msg.length > MAX_CONFESSION_LENGTH) {
+      throw new BadRequestException(
+        `Confession cannot exceed ${MAX_CONFESSION_LENGTH} characters (received ${msg.length})`,
+      );
+    }
+
     // ── Idempotency check ─────────────────────────────────────────────────
     if (dto.idempotencyKey) {
       const payloadHash = this.idempotencyService.computePayloadHash({
@@ -1381,5 +1389,72 @@ export class ConfessionService {
    */
   async getAllTags() {
     return this.tagService.getAllTags();
+  }
+
+  /**
+   * Soft-delete a confession owned by a user.
+   * Issue #1929: Deleted confessions disappear from public feeds but keep
+   * audit/moderation records and related reactions/comments intact.
+   */
+  async deleteConfession(
+    confessionId: string,
+    userId: string,
+  ): Promise<{ success: boolean; deleted: boolean }> {
+    const confession = await this.confessionRepo.findOne({
+      where: { id: confessionId },
+    });
+
+    if (!confession) {
+      throw new NotFoundException('Confession not found');
+    }
+
+    const now = new Date();
+    await this.confessionRepo.update(
+      { id: confessionId },
+      {
+        isDeleted: true,
+        deletedAt: now,
+        deletedBy: userId,
+      },
+    );
+
+    await this.invalidateConfessionCache();
+
+    return {
+      success: true,
+      deleted: true,
+    };
+  }
+
+  /**
+   * Restore a soft-deleted confession.
+   * Issue #1929: Restore allows reversing accidental deletions.
+   */
+  async restoreConfession(
+    confessionId: string,
+  ): Promise<{ success: boolean; restored: boolean }> {
+    const confession = await this.confessionRepo.findOne({
+      where: { id: confessionId },
+    });
+
+    if (!confession) {
+      throw new NotFoundException('Confession not found');
+    }
+
+    await this.confessionRepo.update(
+      { id: confessionId },
+      {
+        isDeleted: false,
+        deletedAt: null,
+        deletedBy: null,
+      },
+    );
+
+    await this.invalidateConfessionCache();
+
+    return {
+      success: true,
+      restored: true,
+    };
   }
 }

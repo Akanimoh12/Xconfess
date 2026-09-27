@@ -348,4 +348,41 @@ export class ConfessionController {
   getById(@Param('id') id: string, @Req() req: Request) {
     return this.service.getConfessionByIdWithViewCount(id, req);
   }
+
+  @Delete(':id')
+  @ApiOperation({
+    summary: 'Soft-delete a confession (Issue #1929)',
+    description:
+      'Marks a confession as deleted. It will be removed from public feeds but kept in audit records.',
+  })
+  @ApiParam({ name: 'id', description: 'Confession UUID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Confession soft-deleted successfully.',
+  })
+  @ApiResponse({ status: 404, description: 'Confession not found.' })
+  deleteConfession(
+    @Param('id') id: string,
+    @Headers('x-anonymous-user-id') userId: string,
+  ) {
+    if (!userId) {
+      throw new BadRequestException('User ID is required for deletion');
+    }
+    return this.service.deleteConfession(id, userId);
+  }
+
+  @Patch(':id/restore')
+  @ApiOperation({
+    summary: 'Restore a soft-deleted confession (Issue #1929)',
+    description: 'Restores a confession that was previously soft-deleted.',
+  })
+  @ApiParam({ name: 'id', description: 'Confession UUID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Confession restored successfully.',
+  })
+  @ApiResponse({ status: 404, description: 'Confession not found.' })
+  restoreConfession(@Param('id') id: string) {
+    return this.service.restoreConfession(id);
+  }
 }
