@@ -2,11 +2,14 @@ import { NotificationProcessor, NOTIFICATION_DLQ, NOTIFICATION_QUEUE, Notificati
 import { EmailNotificationService } from '../services/email-notification.service';
 import { AppLogger } from '../../logger/logger.service';
 import { Queue, Job } from 'bullmq';
+import { createHash } from 'node:crypto';
 
 describe('NotificationProcessor', () => {
   let processor: NotificationProcessor;
   let emailNotificationService: { sendEmail: jest.Mock };
   let dlqQueue: { add: jest.Mock };
+  let notificationQueue: { client: Promise<any> };
+  let redisValues: Map<string, string>;
   let appLogger: { incrementCounter: jest.Mock; observeTimer: jest.Mock };
 
   beforeEach(() => {
@@ -18,6 +21,21 @@ describe('NotificationProcessor', () => {
       add: jest.fn().mockResolvedValue(undefined),
     };
 
+    redisValues = new Map();
+    const redis = {
+      get: jest.fn(async (key: string) => redisValues.get(key) ?? null),
+      set: jest.fn(async (key: string, value: string, ...options: unknown[]) => {
+        if (options.includes('NX') && redisValues.has(key)) return null;
+        redisValues.set(key, value);
+        return 'OK';
+      }),
+      eval: jest.fn(async (_script: string, _numKeys: number, key: string, token: string) => {
+        if (redisValues.get(key) === token) redisValues.delete(key);
+        return 1;
+      }),
+    };
+    notificationQueue = { client: Promise.resolve(redis) };
+
     appLogger = {
       incrementCounter: jest.fn(),
       observeTimer: jest.fn(),
@@ -26,6 +44,7 @@ describe('NotificationProcessor', () => {
     processor = new NotificationProcessor(
       emailNotificationService as unknown as EmailNotificationService,
       dlqQueue as unknown as Queue<NotificationJobData>,
+      notificationQueue as unknown as Queue<NotificationJobData>,
       appLogger as unknown as AppLogger,
     );
   });
@@ -114,6 +133,11 @@ describe('NotificationProcessor', () => {
         _meta: expect.objectContaining({ originalJobId: String(job.id), attemptsMade: job.attemptsMade, lastError: 'terminal failure' }),
       }),
       expect.objectContaining({ removeOnComplete: false, removeOnFail: false }),
+    );
+    expect(dlqQueue.add.mock.calls[0][2]).toEqual(
+      expect.objectContaining({
+        jobId: `notification-${createHash('sha256').update('job-789').digest('hex')}`,
+      }),
     );
   });
 
@@ -261,6 +285,51 @@ describe('NotificationProcessor', () => {
     );
     // observeTimer is only called on success — when sendEmail throws, the timer is not observed
     expect(appLogger.observeTimer).not.toHaveBeenCalled();
+  });
+
+  it('does not mark a notification delivered when sending fails, so retry can deliver it', async () => {
+    const job = {
+      name: 'send-notification',
+      id: 'job-idempotent-retry',
+      attemptsMade: 0,
+      data: { userId: 'user-retry', type: 'test', title: 'T', message: 'M', idempotencyKey: 'event-42' },
+      opts: { attempts: 3 },
+    } as unknown as Job<NotificationJobData>;
+    emailNotificationService.sendEmail
+      .mockRejectedValueOnce(new Error('temporary SMTP failure'))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(processor.process(job)).rejects.toThrow('temporary SMTP failure');
+    await expect(processor.process(job)).resolves.toBeUndefined();
+
+    expect(emailNotificationService.sendEmail).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips duplicate event jobs across workers sharing Redis', async () => {
+    const job = {
+      name: 'send-notification',
+      id: 'job-idempotent-duplicate',
+      attemptsMade: 0,
+      data: { userId: 'user-duplicate', type: 'test', title: 'T', message: 'M', idempotencyKey: 'event-99' },
+      opts: { attempts: 3 },
+    } as unknown as Job<NotificationJobData>;
+
+    const secondWorker = new NotificationProcessor(
+      emailNotificationService as unknown as EmailNotificationService,
+      dlqQueue as unknown as Queue<NotificationJobData>,
+      notificationQueue as unknown as Queue<NotificationJobData>,
+      appLogger as unknown as AppLogger,
+    );
+    const duplicateJob = { ...job, id: 'job-idempotent-duplicate-2' } as Job<NotificationJobData>;
+    const outcomes = await Promise.allSettled([
+      processor.process(job),
+      secondWorker.process(duplicateJob),
+    ]);
+    if (outcomes.some((outcome) => outcome.status === 'rejected')) {
+      await secondWorker.process(duplicateJob);
+    }
+
+    expect(emailNotificationService.sendEmail).toHaveBeenCalledTimes(1);
   });
 
   it('should process multiple jobs sequentially with independent retry tracking', async () => {
