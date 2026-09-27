@@ -30,6 +30,7 @@ import {
   buildStellarInvocationAuditMetadata,
 } from './stellar-invocation-audit';
 import { redactSecretStrings } from '../utils/redact-secrets';
+import { StellarValidator } from './stellar-validator';
 
 @ApiTags('Stellar')
 @Controller('stellar')
@@ -95,9 +96,7 @@ export class StellarController {
       confessionHash,
     });
 
-    if (!/^[0-9a-fA-F]{64}$/.test(confessionHash)) {
-      throw new BadRequestException('Invalid confession hash format. Expected 32-byte hex.');
-    }
+    StellarValidator.validateConfessionHash(confessionHash);
 
     const timestamp = await this.contractService.verifyConfession(confessionHash);
     this.logger.log({
@@ -116,6 +115,7 @@ export class StellarController {
   @ApiOperation({ summary: 'Get account balance' })
   @ApiResponse({ status: 200, description: 'Account balance' })
   async getBalance(@Param('address') address: string) {
+    StellarValidator.validatePublicKey(address, 'address');
     return this.stellarService.getAccountBalance(address);
   }
 
@@ -125,12 +125,14 @@ export class StellarController {
   async verifyTransaction(@Body() dto: VerifyTransactionDto, @Req() req: any) {
     const requestId = req.requestId as string | undefined;
     this.logger.log({ message: 'Stellar tx verify started', requestId, txHash: dto.txHash });
+    StellarValidator.validateTransactionHash(dto.txHash);
     return this.stellarService.verifyTransaction(dto.txHash, requestId);
   }
 
   @Get('account-exists/:address')
   @ApiOperation({ summary: 'Check if account exists' })
   async accountExists(@Param('address') address: string) {
+    StellarValidator.validatePublicKey(address, 'address');
     const exists = await this.stellarService.accountExists(address);
     return { exists };
   }
