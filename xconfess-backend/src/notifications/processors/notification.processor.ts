@@ -15,6 +15,8 @@ export interface NotificationJobData {
   message: string;
   /** Stable idempotency key — prevents duplicate delivery across retries (#1980). */
   idempotencyKey?: string;
+  /** Correlation ID from originating request — links background jobs to initiating operation. */
+  requestId?: string;
   metadata?: any;
   _meta?: {
     originalJobId: string | undefined;
@@ -61,7 +63,8 @@ export class NotificationProcessor extends WorkerHost {
 
       this.logger.log(
         `Processing notification job ${job.id} (attempt ${job.attemptsMade + 1})` +
-          ` → userId: ${job.data.userId}`,
+          ` → userId: ${job.data.userId}` +
+          `${job.data.requestId ? ` requestId: ${job.data.requestId}` : ''}`,
       );
 
       this.appLogger.incrementCounter('notification_queue_processing_total', 1, {
