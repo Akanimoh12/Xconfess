@@ -120,6 +120,11 @@ describe('NotificationService', () => {
         {
           notificationId: 'notif-1',
           userId: 'user-1',
+          type: NotificationType.NEW_MESSAGE,
+          title: 'Title',
+          message: 'Message',
+          metadata: undefined,
+          idempotencyKey: 'notif-1',
         },
         { jobId: 'email-notif-1' },
       );
@@ -359,4 +364,3 @@ describe('NotificationService', () => {
     });
   });
 });
-

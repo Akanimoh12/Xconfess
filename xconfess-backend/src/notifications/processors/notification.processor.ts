@@ -1,9 +1,11 @@
 import { Processor, OnWorkerEvent, InjectQueue, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job, Queue } from 'bullmq';
+import { createHash, randomUUID } from 'node:crypto';
 import { EmailNotificationService } from '../services/email-notification.service';
 import { NotificationType } from '../entities/notification.entity';
 import { AppLogger } from '../../logger/logger.service';
+import { redactSecretStrings } from '../../utils/redact-secrets';
 
 export const NOTIFICATION_QUEUE = 'notifications';
 export const NOTIFICATION_DLQ = 'notifications-dlq';
@@ -15,6 +17,7 @@ export interface NotificationJobData {
   message: string;
   /** Stable idempotency key — prevents duplicate delivery across retries (#1980). */
   idempotencyKey?: string;
+  notificationId?: string;
   /** Correlation ID from originating request — links background jobs to initiating operation. */
   requestId?: string;
   metadata?: any;
@@ -23,6 +26,7 @@ export interface NotificationJobData {
     failedAt: string;
     attemptsMade: number;
     lastError: string;
+    lastErrorClass?: string;
     replayJobId?: string;
     replayedAt?: string;
     replayOutcome?: 'replayed' | 'deduplicated';
@@ -39,6 +43,8 @@ export class NotificationProcessor extends WorkerHost {
     private readonly emailNotificationService: EmailNotificationService,
     @InjectQueue(NOTIFICATION_DLQ)
     private readonly dlq: Queue<NotificationJobData>,
+    @InjectQueue(NOTIFICATION_QUEUE)
+    private readonly notificationQueue: Queue<NotificationJobData>,
     private readonly appLogger: AppLogger,
   ) {
     super();
@@ -47,19 +53,7 @@ export class NotificationProcessor extends WorkerHost {
   // ------------------------------------------------------------------ process
   async process(job: Job<NotificationJobData>): Promise<void> {
     if (job.name === 'send-notification') {
-      // Idempotency guard (#1980): skip if this job was already delivered.
       const idempotencyKey = job.data.idempotencyKey;
-      if (idempotencyKey) {
-        const lockKey = `notif_delivered:${idempotencyKey}`;
-        const alreadyDelivered = await this.checkIdempotency(lockKey);
-        if (alreadyDelivered) {
-          this.logger.log(
-            `Skipping duplicate notification job ${job.id} (idempotencyKey: ${idempotencyKey})`,
-          );
-          return;
-        }
-        await this.markDelivered(lockKey);
-      }
 
       this.logger.log(
         `Processing notification job ${job.id} (attempt ${job.attemptsMade + 1})` +
@@ -73,7 +67,18 @@ export class NotificationProcessor extends WorkerHost {
       });
 
       const startedAt = Date.now();
-      await this.emailNotificationService.sendEmail(job.data);
+      if (idempotencyKey) {
+        const delivered = await this.deliverIdempotently(
+          idempotencyKey,
+          () => this.emailNotificationService.sendEmail(job.data),
+        );
+        if (!delivered) {
+          this.logger.log(`Skipping duplicate notification job ${job.id}`);
+          return;
+        }
+      } else {
+        await this.emailNotificationService.sendEmail(job.data);
+      }
       this.appLogger.observeTimer(
         'notification_queue_processing_duration_ms',
         Date.now() - startedAt,
@@ -100,8 +105,11 @@ export class NotificationProcessor extends WorkerHost {
 
     const maxAttempts = (job.opts as any)?.attempts ?? 1;
 
+    const safeError = redactSecretStrings(error.message)
+      .replace(/[\r\n\t]+/g, ' ')
+      .slice(0, 500);
     this.logger.warn(
-      `Job ${job.id} failed (attempt ${job.attemptsMade}/${maxAttempts}): ${error.message}`,
+      `Job ${job.id} failed (attempt ${job.attemptsMade}/${maxAttempts}): ${safeError}`,
     );
 
     const isExhausted = job.attemptsMade >= maxAttempts;
@@ -124,7 +132,6 @@ export class NotificationProcessor extends WorkerHost {
 
       this.logger.error(
         `Job ${job.id} exhausted all retries — moving to DLQ`,
-        error.stack,
       );
 
       await this.dlq.add(
@@ -135,10 +142,12 @@ export class NotificationProcessor extends WorkerHost {
             originalJobId: String(job.id),
             failedAt: new Date().toISOString(),
             attemptsMade: job.attemptsMade,
-            lastError: error.message,
+            lastError: safeError,
+            lastErrorClass: error.name || 'Error',
           },
         },
         {
+          jobId: `notification-${createHash('sha256').update(String(job.id)).digest('hex')}`,
           removeOnComplete: false,
           removeOnFail: false,
         },
@@ -154,21 +163,42 @@ export class NotificationProcessor extends WorkerHost {
     }
   }
 
-  // --------------------------------------------------------- idempotency (#1980)
+  // --------------------------------------------------------- idempotency (#2000)
   /**
-   * Check whether a notification with the given idempotency key has already
-   * been delivered. Uses an in-memory Set — swap for Redis/DB in production
-   * if the worker scales horizontally.
+   * A Redis lock serializes duplicate event jobs across worker processes. The
+   * delivered marker is written only after sendEmail succeeds, so a transient
+   * delivery failure releases the lock and remains retryable.
    */
-  private deliveredKeys = new Set<string>();
+  private async deliverIdempotently(
+    idempotencyKey: string,
+    deliver: () => Promise<unknown>,
+  ): Promise<boolean> {
+    const digest = createHash('sha256').update(idempotencyKey).digest('hex');
+    const deliveredKey = `notification:delivered:${digest}`;
+    const lockKey = `notification:processing:${digest}`;
+    const redis = await this.notificationQueue.client;
 
-  private async checkIdempotency(key: string): Promise<boolean> {
-    return this.deliveredKeys.has(key);
-  }
+    if (await redis.get(deliveredKey)) return false;
 
-  private async markDelivered(key: string): Promise<void> {
-    this.deliveredKeys.add(key);
-    // Evict after 24 hours to prevent unbounded memory growth.
-    setTimeout(() => this.deliveredKeys.delete(key), 24 * 60 * 60 * 1000);
+    const lockToken = randomUUID();
+    const lock = await redis.set(lockKey, lockToken, 'PX', 5 * 60 * 1000, 'NX');
+    if (lock !== 'OK') {
+      if (await redis.get(deliveredKey)) return false;
+      // Let BullMQ retry this job after the active worker releases the lock.
+      throw new Error('Notification with this event key is already being delivered.');
+    }
+
+    try {
+      await deliver();
+      await redis.set(deliveredKey, '1', 'EX', 30 * 24 * 60 * 60);
+      return true;
+    } finally {
+      await redis.eval(
+        'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end',
+        1,
+        lockKey,
+        lockToken,
+      );
+    }
   }
 }
