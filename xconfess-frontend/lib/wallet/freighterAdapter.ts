@@ -312,7 +312,8 @@ export async function freighterGetWalletInfo(): Promise<{
       return address
         ? { publicKey: address, network: await freighterGetNetworkLabel() }
         : null;
-    } catch {
+    } catch (e) {
+      mobileWalletConnected = false;
       return null;
     }
   }
@@ -323,5 +324,18 @@ export async function freighterGetWalletInfo(): Promise<{
     return await freighterConnect();
   } catch {
     return null;
+  }
+}
+
+export async function freighterValidateConnection(
+  expectedPublicKey?: string,
+): Promise<boolean> {
+  try {
+    const info = await freighterGetWalletInfo();
+    if (!info) return false;
+    if (expectedPublicKey && info.publicKey !== expectedPublicKey) return false;
+    return true;
+  } catch {
+    return false;
   }
 }
