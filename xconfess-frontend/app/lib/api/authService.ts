@@ -177,15 +177,42 @@ export const authApi = {
 
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
+
+        // Check if response is a normalized auth error from the proxy route,
+        // same as login/getCurrentUser, so a validation or terminal error
+        // from the proxy is mapped to the same user-facing message everywhere.
+        if (isNormalizedAuthError(body)) {
+          const normalized = body as NormalizedAuthError;
+          const message = getAuthErrorMessage(normalized);
+          const appError = new AppError(message, normalized.code, response.status, {
+            responseBody: body,
+            path: '/api/users/register',
+            field: extractAuthFieldError(body),
+            normalized,
+            requestId: extractResponseRequestId(response, body),
+          });
+          logError(appError, 'authApi.register', { status: response.status });
+          throw appError;
+        }
+
+        const status = response.status;
+        const rawApi =
+          (body && ((body as any).message || (body as any).error)) || null;
         const message =
-          (body as any)?.message ?? `Registration failed (${response.status})`;
+          typeof rawApi === 'string' && rawApi.trim().length > 0
+            ? rawApi
+            : getStatusMessage(status);
+        const code = getStatusCodeString(status);
         const field = extractAuthFieldError(body);
-        throw new AppError(message, (body as any)?.code ?? 'REGISTER_FAILED', response.status, {
+        const appError = new AppError(message, code, status, {
           responseBody: body,
           path: '/api/users/register',
           field,
+          upstreamMessage: typeof rawApi === 'string' ? rawApi : undefined,
           requestId: extractResponseRequestId(response, body),
         });
+        logError(appError, 'authApi.register', { status, url: '/api/users/register' });
+        throw appError;
       }
 
       return response.json() as Promise<RegisterResponse>;
@@ -255,7 +282,13 @@ export const authApi = {
    * Logout user (clears session cookie)
    */
   async logout(): Promise<void> {
-    await fetch('/api/auth/session', { method: 'DELETE' }).catch(() => { });
+    // Logout must never block or throw on a network failure, but silently
+    // swallowing the error made this flow inconsistent with login/register/
+    // getCurrentUser, which all log what went wrong via logError.
+    await fetch('/api/auth/session', { method: 'DELETE' }).catch((error) => {
+      const appError = toAppError(error, 'Logout failed');
+      logError(appError, 'authApi.logout');
+    });
   },
 };
 
