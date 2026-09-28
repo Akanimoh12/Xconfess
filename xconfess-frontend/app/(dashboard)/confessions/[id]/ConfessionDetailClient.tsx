@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { readRetryDelay, shouldRetryRead } from "@/app/lib/api/readRetry";
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -98,7 +99,8 @@ export function ConfessionDetailClient({
       return result.data;
     },
     initialData: initialConfession ?? undefined,
-    retry: 1,
+    retry: shouldRetryRead,
+    retryDelay: readRetryDelay,
   });
 
   const submitReport = async () => {
